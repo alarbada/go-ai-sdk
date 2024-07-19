@@ -36,6 +36,7 @@ type calculateParams struct {
 }
 
 func main() {
+
 	ctx := context.Background()
 	generator := ai.TextGenerator{
 		Client: openai.NewClient(apikey),
@@ -65,6 +66,11 @@ func main() {
 			),
 		},
 	}
+
+	generator.Client.UploadBatchFile(ctx, openai.UploadBatchFileRequest{
+		FileName: "",
+		Lines:    []openai.BatchLineItem{},
+	})
 
 	res, err := generator.Generate(ctx)
 	fmt.Println(res, err)

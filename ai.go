@@ -85,14 +85,21 @@ func (t tool[T]) Execute(payload string) (string, error) {
 type Tools map[string]Tool
 
 type TextGenerator struct {
-	Client *openai.Client
-	Model  string
-	System string
-	Prompt string
-	Tools  Tools
+	Client      *openai.Client
+	Model       string
+	System      string
+	Prompt      string
+	Temperature float32
+	Tools       Tools
 }
 
-func (g TextGenerator) Generate(ctx context.Context) (string, error) {
+type Generation struct {
+	Text       string
+	Roundtrips int
+	Messages   []openai.ChatCompletionMessage
+}
+
+func (g TextGenerator) Generate(ctx context.Context) (*Generation, error) {
 	var tools []openai.Tool
 	for name, tool := range g.Tools {
 		tools = append(tools, newTool(name, tool.Description(), tool.Parameters()))
@@ -112,17 +119,16 @@ func (g TextGenerator) Generate(ctx context.Context) (string, error) {
 	roundtripLimit := 10
 
 	for i := 0; i < roundtripLimit; i++ {
-		resp, err := g.Client.CreateChatCompletion(
-			ctx,
-			openai.ChatCompletionRequest{
-				Model:       "gpt-4o-mini",
-				Temperature: 0,
-				Messages:    messages,
-				Tools:       tools,
-			},
-		)
+		request := openai.ChatCompletionRequest{
+			Model:       g.Model,
+			Temperature: g.Temperature,
+			Messages:    messages,
+			Tools:       tools,
+		}
+
+		resp, err := g.Client.CreateChatCompletion(ctx, request)
 		if err != nil {
-			return "", fmt.Errorf("chat completion error: %w", err)
+			return nil, fmt.Errorf("chat completion error: %w", err)
 		}
 
 		assistantMessage := resp.Choices[0].Message
@@ -132,12 +138,12 @@ func (g TextGenerator) Generate(ctx context.Context) (string, error) {
 			for _, toolCall := range assistantMessage.ToolCalls {
 				foundTool, ok := g.Tools[toolCall.Function.Name]
 				if !ok {
-					return "", fmt.Errorf("tool %v not found", toolCall.Function.Name)
+					return nil, fmt.Errorf("tool %v not found", toolCall.Function.Name)
 				}
 
 				res, err := foundTool.Execute(toolCall.Function.Arguments)
 				if err != nil {
-					return "", fmt.Errorf("tool %v failed: %w", toolCall.Function.Name, err)
+					return nil, fmt.Errorf("tool %v failed: %w", toolCall.Function.Name, err)
 				}
 
 				messages = append(messages, openai.ChatCompletionMessage{
@@ -149,10 +155,14 @@ func (g TextGenerator) Generate(ctx context.Context) (string, error) {
 			}
 
 			continue
-		} else {
-			return assistantMessage.Content, nil
 		}
+
+		return &Generation{
+			Text:       assistantMessage.Content,
+			Roundtrips: i,
+			Messages:   messages,
+		}, nil
 	}
 
-	return "", fmt.Errorf("exceeded completion call roundtrip limit %v", roundtripLimit)
+	return nil, fmt.Errorf("exceeded completion call roundtrip limit %v", roundtripLimit)
 }
