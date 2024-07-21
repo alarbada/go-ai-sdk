@@ -13,10 +13,8 @@ func newTool(
 	name, description string,
 	structSchema any,
 ) openai.Tool {
-
 	reflector := jsonschema.Reflector{
 		DoNotReference: true,
-		ExpandedStruct: true,
 		Anonymous:      true,
 	}
 	schema := reflector.Reflect(structSchema)
@@ -34,24 +32,30 @@ func newTool(
 		Function: &openai.FunctionDefinition{
 			Name:        name,
 			Description: description,
-			Parameters:  parameters,
+			Parameters:  json.RawMessage(parameters),
 		},
 	}
 }
 
 type Tool interface {
+	Name() string
 	Description() string
 	Parameters() any
 	Execute(string) (string, error)
 }
 
-func NewTool[T any](description string, execute func(T) (any, error)) Tool {
-	return tool[T]{description, execute}
+func NewTool[T any](name, description string, execute func(T) (any, error)) Tool {
+	return tool[T]{name, description, execute}
 }
 
 type tool[T any] struct {
+	name        string
 	description string
 	execute     func(T) (any, error)
+}
+
+func (t tool[T]) Name() string {
+	return t.name
 }
 
 func (t tool[T]) Description() string {
@@ -82,15 +86,13 @@ func (t tool[T]) Execute(payload string) (string, error) {
 	return string(bs), nil
 }
 
-type Tools map[string]Tool
-
 type TextGenerator struct {
 	Client      *openai.Client
 	Model       string
 	System      string
 	Prompt      string
 	Temperature float32
-	Tools       Tools
+	Tools       []Tool
 }
 
 type Generation struct {
@@ -101,8 +103,8 @@ type Generation struct {
 
 func (g TextGenerator) Generate(ctx context.Context) (*Generation, error) {
 	var tools []openai.Tool
-	for name, tool := range g.Tools {
-		tools = append(tools, newTool(name, tool.Description(), tool.Parameters()))
+	for _, tool := range g.Tools {
+		tools = append(tools, newTool(tool.Name(), tool.Description(), tool.Parameters()))
 	}
 
 	messages := []openai.ChatCompletionMessage{
@@ -136,10 +138,16 @@ func (g TextGenerator) Generate(ctx context.Context) (*Generation, error) {
 
 		if len(assistantMessage.ToolCalls) > 0 {
 			for _, toolCall := range assistantMessage.ToolCalls {
-				foundTool, ok := g.Tools[toolCall.Function.Name]
-				if !ok {
-					return nil, fmt.Errorf("tool %v not found", toolCall.Function.Name)
+				var foundTool Tool
+				for _, tool := range g.Tools {
+					if tool.Name() == toolCall.Function.Name {
+						foundTool = tool
+						goto didFindTool
+					}
 				}
+				return nil, fmt.Errorf("tool %v not found", toolCall.Function.Name)
+
+			didFindTool:
 
 				res, err := foundTool.Execute(toolCall.Function.Arguments)
 				if err != nil {
